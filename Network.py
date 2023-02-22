@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import Node
 import Zone
-from numba import jit
+
 
 # 网格城市
 class Network:
@@ -162,26 +162,6 @@ class Network:
         print(shortest_path_length)
         print(Shortest_path)
 
-
-    # @ jit()
-    def save_shortest_path(self,OD):
-        
-
-        O_locations = OD['origin_id'].unique()
-        D_locations = OD['destination_id'].unique()
-
-        locations =list(set(list(O_locations) + list(D_locations)))
-        print(len(O_locations),len(D_locations),len(locations))
-        O = []
-        D = []
-        distance = []
-        for i in tqdm(range(len(locations))):
-            for j in range(len(locations)):
-                O.append(locations[i])
-                D.append(locations[j])
-                distance.append(self.get_path(locations[i], locations[j])[0])
-        res = pd.DataFrame({'O':O, 'D':D, 'distance':distance})
-        res.to_csv('./input/shortest_path.csv')
 
 # net = Network()
 # net.test()
