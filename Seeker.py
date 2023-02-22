@@ -18,6 +18,10 @@ class Seeker():
         self.begin_time = row['dwv_order_make_haikou_1.departure_time']
         self.O_location = row.O_location
         self.D_location = row.D_location
+        self.o_x = row['dwv_order_make_haikou_1.o_x']
+        self.o_y = row['dwv_order_make_haikou_1.o_y']
+        self.d_x = row['dwv_order_make_haikou_1.d_x']
+        self.d_y = row['dwv_order_make_haikou_1.d_y']
         self.begin_time_stamp = time.mktime(time.strptime\
             (self.begin_time, "%Y-%m-%d %H:%M:%S"))
         self.matching_prob = row.matching_prob

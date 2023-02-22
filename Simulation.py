@@ -17,67 +17,33 @@ class Simulation():
         self.date = cfg.date
         self.order_list = pd.read_csv(self.cfg.order_file).sample(
             frac=cfg.demand_ratio, random_state=1)
-        self.vehicle_num = int(len(self.order_list) /  cfg.order_driver_ratio )
+        self.vehicle_num = int(len(self.order_list) / cfg.order_driver_ratio)
         self.order_list['beginTime_stamp'] = self.order_list['dwv_order_make_haikou_1.departure_time'].apply(
             lambda x: time.mktime(time.strptime(x, '%Y-%m-%d %H:%M:%S')))
         self.begin_time = time.mktime(time.strptime(
             cfg.date + cfg.simulation_begin_time, "%Y-%m-%d %H:%M:%S"))
         self.end_time = time.mktime(time.strptime(
             cfg.date + cfg.simulation_end_time, "%Y-%m-%d %H:%M:%S"))
-        self.locations = self.order_list['O_location'].unique()
         self.network = net.Network()
-        self.shortest_path = pd.read_csv(self.cfg.shortest_path_file)
 
         self.time_unit = 10  # 控制的时间窗,每10s匹配一次
-        self.index = 0  # 计数器
-        self.device = cfg.device
-        self.total_reward = 0
         self.optimazition_target = cfg.optimazition_target  # 仿真的优化目标
         self.matching_condition = cfg.matching_condition  # 匹配时是否有条件限制
         self.pickup_distance_threshold = cfg.pickup_distance_threshold
         self.detour_distance_threshold = cfg.detour_distance_threshold
-        self.vehicle_list = []
-        self.visualization_df = pd.DataFrame(columns=[
-                                             'vehicle_id', 'vehicle_type', 'depart_time', 'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id'])
-        self.takers = []
-        self.current_seekers = []  # 存储需要匹配的乘客
-        self.remain_seekers = []
+        self.vehicle_dic = {}
         self.time_reset()
 
         for i in range(self.vehicle_num):
             random.seed(i)
             location = random.choice(self.locations)
             vehicle = Vehicle.Vehicle(i, location, self.cfg)
-            self.vehicle_list.append(vehicle)
+            self.vehicle_dic[i] = vehicle
             # 重置司机的时间
             vehicle.activate_time = self.time
 
-        # system metric
-        self.his_order = []  # all orders responsed
-        self.waitingtime = []
-        self.detour_distance = []
-        self.traveltime = []
-        self.pickup_time = []
-        self.platform_income = []
-        self.shared_distance = []
-        self.reposition_time = []
-        self.total_travel_distance = 0
-        self.saved_travel_distance = 0
-
-        self.carpool_order = []
-        self.ride_distance_error = []
-        self.shared_distance_error = []
-        self.relative_ride_distance_error = []
-        self.relative_shared_distance_error = []
-
     def reset(self):
-        self.takers = []
-        self.current_seekers = []  # 存储需要匹配的乘客
-        self.remain_seekers = []
-        self.vehicle_list = []
-        self.total_reward = 0
-        self.order_list = pd.read_csv(self.cfg.order_file).sample(
-            frac=self.cfg.demand_ratio, random_state=1)
+        self.vehicle_dic = {}
         self.order_list['beginTime_stamp'] = self.order_list['dwv_order_make_haikou_1.departure_time'].apply(
             lambda x: time.mktime(time.strptime(x, '%Y-%m-%d %H:%M:%S')))
         self.begin_time = time.mktime(time.strptime(
@@ -99,26 +65,6 @@ class Simulation():
             # 重置司机的时间
             vehicle.activate_time = self.time
 
-        # system metric
-        self.his_order = []  # all orders responsed
-        self.waitingtime = []
-        self.detour_distance = []
-        self.traveltime = []
-        self.pickup_time = []
-        self.platform_income = []
-        self.shared_distance = []
-        self.reposition_time = []
-        self.total_travel_distance = 0
-        self.saved_travel_distance = 0
-
-        self.carpool_order = []
-        self.ride_distance_error = []
-        self.shared_distance_error = []
-        self.relative_ride_distance_error = []
-        self.relative_shared_distance_error = []
-        self.visualization_df = pd.DataFrame(columns=[
-                                             'vehicle_id', 'vehicle_type', 'depart_time', 'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id'])
-
     def time_reset(self):
         # 转换成时间数组
         self.time = time.strptime(
@@ -128,125 +74,79 @@ class Simulation():
         self.time_slot = 0
         # print('time reset:', self.time)
 
-    def step(self,):
+    def step(self, observation):
         time_old = self.time
         self.time += self.time_unit
         self.time_slot += 1
+        vacant_vehicles = observation[0]
+        partially_occupied_vehicles = observation[1]
+        fully_occupied_vehicles = observation[2]
+        passengers = observation[3]
+        responsed_passengers = observation[4]
 
-        # 筛选时间窗内的订单
-        current_time_orders = self.order_list[self.order_list['beginTime_stamp'] >time_old]
-        current_time_orders = current_time_orders[current_time_orders['beginTime_stamp'] <= self.time]
-        self.current_seekers = []
-        self.current_seekers_location = []
-        for index, row in current_time_orders.iterrows():
-            seeker = Seeker.Seeker( row)
+        # 实例化乘客对象
+        seekers = []
+        for key in passengers.keys():
+            order = self.order_list[self.order_list['dwv_order_make_haikou_1.order_id'] == key]
+            seeker = Seeker.Seeker(order)
             seeker.set_shortest_path(self.get_path(
                 seeker.O_location, seeker.D_location))
             value = self.cfg.unit_distance_value / 1000 * seeker.shortest_distance
             seeker.set_value(value)
-            self.current_seekers.append(seeker)
-            self.current_seekers_location .append(seeker.O_location)
-        for seeker in self.remain_seekers:
-            self.current_seekers.append(seeker)
-            self.current_seekers_location .append(seeker.O_location)
+            seekers.append(seeker)
+
+        # 更新司机位置
+        for key in vacant_vehicles.keys():
+            self.vehicle_dic[key].x = vacant_vehicles[key][0]
+            self.vehicle_dic[key].y = vacant_vehicles[key][1]
+            self.vehicle_dic[key].passengers = 0
+            self.vehicle_dic[key].zone = self.network.getZone(self.vehicle_dic[key].x, self.vehicle_dic[key].y)
+
+        for key in partially_occupied_vehicles.keys():
+            self.vehicle_dic[key].x = partially_occupied_vehicles[key][0]
+            self.vehicle_dic[key].y = partially_occupied_vehicles[key][1]
+            self.vehicle_dic[key].passengers = 1
+            self.vehicle_dic[key].zone = self.network.getZone(self.vehicle_dic[key].x, self.vehicle_dic[key].y)
+
+        for key in fully_occupied_vehicles.keys():
+            self.vehicle_dic[key].x = fully_occupied_vehicles[key][0]
+            self.vehicle_dic[key].y = fully_occupied_vehicles[key][1]
+            self.vehicle_dic[key].passengers = 2
+            self.vehicle_dic[key].zone = self.network.getZone(self.vehicle_dic[key].x, self.vehicle_dic[key].y)
 
         start = time.time()
-        reward, done = self.process(self.time)
+        done = self.process(self.time, seekers)
         end = time.time()
         # print('process 用时', end - start)
-        return reward,  done
+        return  done
 
     #
-    def process(self, time_, ):
-        reward = 0
+    def process(self, time_, seekers):
         takers = []
         vehicles = []
-        seekers = self.current_seekers
 
         if self.time >= time.mktime(time.strptime(self.cfg.date + self.cfg.simulation_end_time, "%Y-%m-%d %H:%M:%S")):
-            print('当前episode仿真时间结束,奖励为:', self.total_reward)
+            print('当前episode仿真时间结束')
+            return  0, True
 
-            # 计算系统指标
-            self.res = {}
-            # for seekers
-            for order in self.his_order:
-                self.waitingtime.append(order.waitingtime)
-                self.detour_distance.append(order.detour)
-                self.traveltime.append(order.traveltime)
-                self.ride_distance_error.append(
-                    abs(order.rs - order.ride_distance))
-                self.relative_ride_distance_error.append(
-                    abs(order.rs - order.ride_distance) / order.rs)
-                self.shared_distance_error.append(
-                    abs(order.es - order.shared_distance))
-                self.relative_shared_distance_error.append(
-                    abs(order.es - order.shared_distance)/order.es)
-
-            self.res['waitingTime'] = np.mean(self.waitingtime)
-            self.res['traveltime'] = np.mean(self.traveltime)
-            self.res['detour_distance'] = np.mean(self.detour_distance)
-
-            # for vehicle
-            self.res['pickup_time'] = np.mean(self.pickup_time)
-            self.res['shared_distance'] = np.mean(self.shared_distance)
-            self.res['total_ride_distance'] = np.sum(
-                self.total_travel_distance)
-            self.res['saved_ride_distance'] = np.sum(
-                self.saved_travel_distance) - np.sum(self.total_travel_distance)
-
-            self.res['platform_income'] = np.sum(self.platform_income)
-            self.res['response_rate'] = len(list(set(self.his_order))) / len(self.order_list)
-            self.res['carpool_rate'] = len(self.carpool_order) / len(self.his_order)
-            self.res['ride_distance_error'] = self.ride_distance_error
-            self.res['shared_distance_error'] = self.shared_distance_error
-            self.res['relative_ride_distance_error'] = self.relative_ride_distance_error
-            self.res['relative_shared_distance_error'] = self.relative_shared_distance_error
-
-            # for system
-            folder = 'output/'+self.cfg.date + '/'
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-            self.visualization_df.to_csv(folder + 'visualization_df.csv')
-            self.save_metric(folder + 'system_metric.pkl')
-            self.save_his_order(folder + 'history_order.pkl')
-            return reward, True
         else:
-            # print('当前episode仿真时间:',time_)
-            # 判断智能体是否能执行动作
-            for vehicle in self.vehicle_list:
-                # print('vehicle.activate_time',vehicle.activate_time)
-                # print('vehicle.state',vehicle.state)
-                vehicle.is_activate(time_)
-                vehicle.reset_reposition()
+            for vehicle in self.vehicle_dic:
+                if vehicle.passengers == 0:
+                    vehicles.append(vehicle)
+                elif vehicle.passengers == 1:
+                    takers.append(vehicle)
 
-                # if vehicle.target == 0 : # 能执行动作
-                #     print('当前episode仿真时间:',time_)
-                #     print('id{},vehicle.activate_time{}'.format(vehicle.id, vehicle.activate_time))
-                #     print('激活时间{}'.format(vehicle.activate_time - time_))
-                if vehicle.state == 1:  # 能执行动作
-                    # print('id{},vehicle.target{}'.format(vehicle.id, vehicle.target))
-                    if vehicle.target == 0:
-                        vehicles.append(vehicle)
-                    else:
-                        # print('id{},vehicle.target{}'.format(vehicle.id, vehicle.target))
-                        takers.append(vehicle)
             # print('len(vehicles)',len(vehicles),'len(takers)', len(takers))
             start = time.time()
-            reward = self.batch_matching(takers, vehicles, seekers)
+            action = self.batch_matching(takers, vehicles, seekers)
             end = time.time()
             # print('匹配用时{},time{},vehicles{},takers{},seekers{}'.format(end - start, self.time_slot, len(vehicles), len(takers), len(seekers)))
-            # for vehicle in self.vehicle_list:
-            #     print('vehicle.activate_time',vehicle.activate_time)
-            #     print('vehicle.target',vehicle.target)
-            self.total_reward += reward
-
-            return reward,  False
+            return  action, False
 
     # 匹配算法
     def batch_matching(self, takers, vehicles, seekers):
         import time
         start = time.time()
-        step_reward = 0
         # 构造权重矩阵
         demand = len(seekers)
         supply = len(takers) + len(vehicles)
@@ -256,37 +156,13 @@ class Simulation():
         dim = max(row_nums, column_nums)
         matrix = np.ones((dim, dim)) * self.cfg.dead_value
 
-        # # 从司机角度计算响应乘客的权重
-        # for row in range(supply):
-        #     for column in range(demand):
-
-        #         if row < len(takers):
-        #             start = time.time()
-        #             matrix[row, column] = self.calTakersWeights(takers[row], seekers[column],
-        #                                                         optimazition_target=self.optimazition_target,
-        #                                                         matching_condition=self.matching_condition)
-        #             end = time.time()
-        #             # print('计算taker权重时间', end - start)
-
-        #         else:
-        #             start = time.time()
-        #             matrix[row, column] = self.calVehiclesWeights(vehicles[row - len(takers)], seekers[column],
-        #                                                           optimazition_target=self.optimazition_target,
-        #                                                           matching_condition=self.matching_condition)
-        #             end = time.time()
-        #             # print('计算Vehicle权重时间', end - start)
-
         # 从乘客角度计算匹配权重
         for column in range(demand):
             # 当前seeker的zone
-            location = seekers[column].O_location
-            zone = self.network.Nodes[location].getZone()
-            nodes = zone.nodes
-
+            zone = self.network.getZone(seekers[column].x, seekers[column].y)
             for row in range(supply):
-
                 if row < len(takers):
-                    if takers[row].location in nodes:
+                    if takers[row].zone == zone:
                         start = time.time()
                         matrix[row, column] = self.calTakersWeights(takers[row], seekers[column],
                                                                     optimazition_target=self.optimazition_target,
@@ -295,13 +171,12 @@ class Simulation():
                         # print('计算taker权重时间', end - start)
                     else:
                         continue
-
                 else:
-                    if vehicles[row - len(takers)].location in nodes:
+                    if vehicles[row - len(takers)].zone == zone:
                         start = time.time()
                         matrix[row, column] = self.calVehiclesWeights(vehicles[row - len(takers)], seekers[column],
-                                                                    optimazition_target=self.optimazition_target,
-                                                                    matching_condition=self.matching_condition)
+                                                                      optimazition_target=self.optimazition_target,
+                                                                      matching_condition=self.matching_condition)
                         end = time.time()
                         # print('计算Vehicle权重时间', end - start)
                     else:
@@ -321,352 +196,57 @@ class Simulation():
         end = time.time()
         # print('构造矩阵用时', end-start)
         # print(matrix)
-
+ 
         # 匹配
-        if demand == 0 or supply == 0:
-            self.remain_seekers = []
-            for seeker in seekers:
-                if seeker.response_target == 0 and (self.time - seeker.begin_time_stamp) < self.cfg.delay_time_threshold:
-                    seeker.set_delay(self.time)
-                    self.remain_seekers.append(seeker)
-            return 0
-
         import time
         start = time.time()
         matcher = KM_method.KM_method(matrix)
         res, weights = matcher.run()
         end = time.time()
 
-        # print(res)
-        failed = 0
-        successed = 0
+        # 匹配成功的字典
+        matched_dic = {}
+        # 未匹配成功的车辆列表
+        unmatched_lis = []
+        # 未匹配成功的乘客列表
+        unmatched_passengers = []
         for i in range(len(takers)):
             #  第i个taker响应第res[1][i]个订单
             if res[i] >= len(seekers):
-                # 接到了虚拟订单，taker应该进入下一个匹配池
-                takers[i].reposition_target = 1
-                # print('taker{}拼车失败，进入匹配池'.format(
-                #     takers[i].id))
-                failed += 1
+                unmatched_lis.append(takers[i].id)
             else:
-                # 匹配到新乘客，需要先按原路线接到已有乘客
-                if takers[i].location != takers[i].order_list[0].O_location:
-                    pickup_distance, takers[i].path, takers[i].path_length = self.network.get_path(
-                        takers[i].location, takers[i].order_list[0].O_location)
-                    takers[i].location = takers[i].order_list[0].O_location
-
-                takers[i].order_list.append(seekers[res[i]])
-                self.his_order.append(seekers[res[i]])
-                self.carpool_order.append(seekers[res[i]])
-
-                # 记录目的地
-                pickup_distance, takers[i].path, takers[i].path_length = self.network.get_path(
-                    takers[i].location, takers[i].order_list[1].O_location)
-
-                # print('taker{}拼车成功，权重为{}'.format(
-                #     takers[i].id, matrix[i, res[i]]))
-                successed += 1
-                # 记录seeker等待时间
-                seekers[res[i]].set_waitingtime(
-                    self.time - seekers[res[i]].begin_time_stamp)
-                seekers[res[i]].response_target = 1
-
-                # 做可视化记录，接单
-                columns = ['vehicle_id', 'vehicle_type', 'depart_time',
-                    'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id']
-                row = [takers[i].id, "pickup_p2", self.time - 0.1, self.time + self.cfg.unit_driving_time * pickup_distance, takers[i].location, seekers[res[i]].O_location,
-                    takers[i].order_list[0].id, takers[i].order_list[1].id]
-                self.visualization_df.loc[len(
-                    self.visualization_df.index)] = row
+                # 匹配到新乘客
+                matched_dic[takers[i].id] = seekers[res[i]].id
+                seekers[res[i]].service_target = 1
 
         for i in range(len(vehicles)):
-            #  第i个vehicle响应第res[1][i]个订单
+            #  第i个taker响应第res[1][i]个订单
             if res[i + len(takers)] >= len(seekers):
-                # 接到了虚拟订单
-                vehicles[i].reposition_target = 1
-                # 原地等待时间超过上限
-                if self.time - vehicles[i].activate_time > self.cfg.reposition_time_threshold:
-                    # 调度
-                    repostion_location = random.choice(self.locations)
-
-                    distance, vehicles[i].path, vehicles[i].path_length = self.network.get_path(
-                        vehicles[i].location, repostion_location)
-                    # 做可视化记录，调度
-                    columns = ['vehicle_id', 'vehicle_type', 'depart_time',
-                        'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id']
-                    row = [vehicles[i].id, 'reposition', self.time-0.1, self.time + self.cfg.unit_driving_time * distance, vehicles[i].location, repostion_location,
-                            '', '']
-                    self.visualization_df.loc[len(
-                        self.visualization_df.index)] = row
-                else:
-                    continue
-                failed += 1
-
+                unmatched_lis.append(vehicles[i].id)
             else:
-                # print('vehicle id{},order id{}'.format(vehicles[i].id, seekers[res[i + len(takers)]].id))
-                vehicles[i].order_list.append(seekers[res[i + len(takers)]])
-                self.his_order.append(seekers[res[i + len(takers)]])
+                # 匹配到新乘客
+                matched_dic[vehicles[i].id] = seekers[res[i + len(takers)]].id
+                seekers[res[i + len(takers)]].service_target = 1
 
-                # 更新目的地
-                pickup_distance, vehicles[i].path, vehicles[i].path_length \
-                 = self.network.get_path(
-                     vehicles[i].location, vehicles[i].order_list[0].O_location)
-                # print('vehicles{}拼车成功，权重为{}'.
-                #       format(vehicles[i].id, matrix[i + len(takers), res[i + len(takers)]]))
-                successed += 1
+        for i in range(len(seekers)):
+            if seekers[i].service_target == 0:
+                unmatched_passengers.append(seekers[i].id)
 
-                # 记录seeker等待时间
-                seekers[res[i + len(takers)]].set_waitingtime(self.time -
-                                                              seekers[res[i + len(takers)]].begin_time_stamp)
-                seekers[res[i + len(takers)]].response_target = 1
-
-                # 做可视化记录，接单
-                columns = ['vehicle_id', 'vehicle_type', 'depart_time',
-                    'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id']
-                row = [vehicles[i].id, 'pickup_p1', self.time - 0.1, self.time + self.cfg.unit_driving_time * pickup_distance,
-                     vehicles[i].location, seekers[res[i +
-                         len(takers)]].O_location,
-                    vehicles[i].order_list[0].id, '']
-                self.visualization_df.loc[len(
-                    self.visualization_df.index)] = row
-
+        action = [matched_dic, unmatched_lis, unmatched_passengers ]   
         # print('匹配时间{},匹配成功{},匹配失败{},takers{},vehicles{},demand{},time{}'.
         #       format(end-start, successed, failed, len(takers), len(vehicles), len(seekers), self.time_slot))
-        start = time.time()
-
-        # 更新位置
-        for taker in takers:
-            # 当前匹配没拼到新乘客
-            if taker.reposition_target == 1:
-                # 超出匹配时间
-                if self.time - taker.order_list[0].begin_time_stamp - \
-                        self.cfg.unit_driving_time * taker.p0_pickup_distance > 600:
-                    # 已经10分钟还没拼到车了
-                    # 派送时间
-                    travel_distance = self.get_path(
-                        taker.location, taker.order_list[0].D_location)
-
-                    taker.drive_distance += travel_distance
-                    taker.order_list[0].ride_distance = self.get_path(
-                        taker.order_list[0].O_location, taker.order_list[0].D_location)
-                    taker.order_list[0].shared_distance = 0
-                    self.total_travel_distance += taker.order_list[0].ride_distance
-                    self.saved_travel_distance += taker.order_list[0].ride_distance
-
-                    self.platform_income.append(
-                        taker.order_list[0].value -
-                        self.cfg.unit_distance_cost/1000 * taker.drive_distance
-                    )
-                    # print('order.value{},driver_distance{},income{}:'.format(taker.order_list[0].value,taker.drive_distance,self.platform_income[-1]))
-                    # 更新智能体可以采取动作的时间
-                    taker.activate_time += self.cfg.unit_driving_time * travel_distance
-
-                    # 做可视化记录，派单
-                    columns = ['vehicle_id', 'vehicle_type', 'depart_time',
-                        'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id']
-                    row = [taker.id, 'failed_ridepooling,delivery_p1', self.time, taker.activate_time, taker.order_list[0].O_location, taker.order_list[0].D_location,
-                        taker.order_list[0].id, '']
-                    self.visualization_df.loc[len(
-                        self.visualization_df.index)] = row
-
-                    # print('没有拼到车，activate_time:{}'.format(taker.activate_time - self.time))
-                    # 更新智能体的位置
-                    taker.location = taker.order_list[0].D_location
-                    # 完成订单
-                    taker.order_list = []
-                    taker.target = 0  # 变成vehicle
-                    taker.drive_distance = 0
-                    taker.reward = 0
-                    taker.p0_pickup_distance = 0
-                    taker.path = []
-                    taker.path_length = []
-
-                else:
-                    # 没超出匹配时间，根据当前目的地更新位置和时间
-                    if taker.path:
-                        # 没到目的地
-                        taker.location = taker.path.pop()
-                        taker.activate_time += self.cfg.unit_driving_time * taker.path_length.pop()
-                    else:
-                        # 到目的地了
-                        taker.activate_time = self.time
-
-            # 当前匹配有新乘客
-            else:
-                # 接新乘客
-                pickup_distance, taker.path, taker.path_length \
-                 = self.network.get_path(
-                    taker.order_list[0].O_location, taker.order_list[1].O_location)
-
-                pickup_time = self.cfg.unit_driving_time * pickup_distance
-                taker.drive_distance += pickup_distance
-                self.pickup_time.append(pickup_time)
-
-                taker.order_list[0].ride_distance += pickup_distance
-
-                self.total_travel_distance += pickup_distance
-                self.saved_travel_distance += taker.order_list[0].shortest_distance
-                self.saved_travel_distance += taker.order_list[1].shortest_distance
-
-                # 决定派送顺序，是否fifo
-                fifo, distance = self.is_fifo(
-                    taker.order_list[0], taker.order_list[1])
-                if fifo:
-                    # 先上先下
-                    self.total_travel_distance += self.get_path(taker.order_list[1].O_location, taker.order_list[0].D_location)
-                    self.total_travel_distance += self.get_path(taker.order_list[0].D_location, taker.order_list[1].D_location)
-
-                    p0_invehicle = pickup_distance + distance[0]
-                    p0_expected_distance = taker.order_list[0].shortest_distance
-                    # 绕行
-                    taker.order_list[0].set_detour(
-                        p0_invehicle - p0_expected_distance)
-                    p1_invehicle = sum(distance)
-                    p1_expected_distance = taker.order_list[1].shortest_distance
-                    taker.order_list[1].set_detour(
-                        p1_invehicle - p1_expected_distance)
-                    # travel time
-                    taker.order_list[0].set_traveltime(
-                        self.cfg.unit_driving_time * p0_invehicle)
-                    taker.order_list[1].set_traveltime(
-                        self.cfg.unit_driving_time * p1_invehicle)
-
-                    # 做可视化记录，派单
-                    columns = ['vehicle_id', 'vehicle_type', 'depart_time',
-                        'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id']
-                    row = [taker.id, 'delivery_p1', self.time + self.cfg.unit_driving_time * pickup_distance, self.time + self.cfg.unit_driving_time * p0_invehicle, taker.order_list[1].O_location, taker.order_list[0].D_location,
-                            taker.order_list[0].id, taker.order_list[1].id]
-                    self.visualization_df.loc[len(
-                        self.visualization_df.index)] = row
-
-                    row = [taker.id, 'delivery_p2', self.time + self.cfg.unit_driving_time * p0_invehicle, self.time + self.cfg.unit_driving_time * (pickup_distance + sum(distance)), taker.order_list[0].D_location, taker.order_list[1].D_location,
-                            taker.order_list[0].id, taker.order_list[1].id]
-                    self.visualization_df.loc[len(
-                        self.visualization_df.index)] = row
-
-                else:
-                    # 先上后下
-                    self.total_travel_distance += self.get_path(taker.order_list[1].O_location, taker.order_list[1].D_location)
-                    self.total_travel_distance += self.get_path(taker.order_list[1].D_location, taker.order_list[0].D_location)
-
-                    p0_invehicle = pickup_distance + sum(distance)
-                    p1_invehicle = distance[0]
-                    p0_expected_distance = taker.order_list[0].shortest_distance
-                    taker.order_list[0].set_detour(
-                        p0_invehicle - p0_expected_distance)
-
-                    taker.order_list[1].set_detour(
-                        p1_invehicle - taker.order_list[1].shortest_distance)
-                    # travel time
-                    taker.order_list[0].set_traveltime(
-                        self.cfg.unit_driving_time * p0_invehicle)
-                    taker.order_list[1].set_traveltime(
-                        self.cfg.unit_driving_time * p1_invehicle)
-
-                    # 做可视化记录，派单
-                    columns = ['vehicle_id', 'vehicle_type', 'depart_time',
-                        'arrival_time', 'O_location', 'D_location', 'p1_id', 'p2_id']
-                    row = [taker.id, 'delivery_p2', self.time + self.cfg.unit_driving_time * pickup_distance, self.time + self.cfg.unit_driving_time * (pickup_distance + p1_invehicle), taker.order_list[1].O_location, taker.order_list[1].D_location,
-                            taker.order_list[0].id, taker.order_list[1].id]
-                    self.visualization_df.loc[len(
-                        self.visualization_df.index)] = row
-
-                    row = [taker.id, 'delivery_p1', self.time + self.cfg.unit_driving_time * (pickup_distance + p1_invehicle),   self.time + self.cfg.unit_driving_time * p0_invehicle, taker.order_list[1].D_location, taker.order_list[0].D_location,
-                            taker.order_list[0].id, taker.order_list[1].id]
-                    self.visualization_df.loc[len(
-                        self.visualization_df.index)] = row
-
-                # 乘客的行驶距离
-                taker.order_list[0].ride_distance = p0_invehicle
-                taker.order_list[1].ride_distance = p1_invehicle
-                taker.order_list[0].shared_distance = distance[0]
-                taker.order_list[1].shared_distance = distance[0]
-
-                taker.drive_distance += sum(distance)
-
-                # 计算平台收益
-                self.platform_income.append(
-                    self.cfg.discount_factor * (taker.order_list[0].value + taker.order_list[1].value) -
-                    self.cfg.unit_distance_cost/1000 * taker.drive_distance
-                )
-                # print('order.value{},driver_distance{},income:{}'.format(self.cfg.discount_factor * (taker.order_list[0].value + taker.order_list[1].value),taker.drive_distance,\
-                #     self.cfg.discount_factor * (taker.order_list[0].value + taker.order_list[1].value) - \
-                #     self.cfg.unit_distance_cost/1000 * taker.drive_distance))
-                # 计算拼车距离
-                self.shared_distance.append(distance[0])
-                # 更新智能体可以采取动作的时间
-                # 计算司机完成两个订单需要的时间
-                dispatching_time = pickup_time + \
-                    self.cfg.unit_driving_time * sum(distance)
-                taker.activate_time = self.time + dispatching_time
-                # print('拼车完成，activate_time:{}'.format(taker.activate_time - self.time))
-                # 更新智能体的位置
-                taker.location = taker.order_list[1].D_location
-                # 完成订单
-                taker.order_list = []
-                taker.target = 0  # 变成vehicle
-                taker.drive_distance = 0
-                taker.reward = 0
-                taker.p0_pickup_distance = 0
-                taker.path = []
-                taker.path_length = []
-
-        for vehicle in vehicles:
-            if vehicle.reposition_target == 1:
-                if vehicle.path:
-                    # 没到目的地
-                    if self.time - vehicle.activate_time > self.cfg.unit_driving_time * vehicle.path_length[0]:
-                        vehicle.location = vehicle.path.pop()
-                        vehicle.path_length.pop()
-                        vehicle.activate_time = self.time
-
-                else:
-                    # 到目的地了
-                    vehicle.activate_time = self.time
-
-            else:
-                vehicle.target = 1  # 变成taker
-                vehicle.origin_location = vehicle.location
-                # 接新乘客
-                pickup_distance, vehicle.path, vehicle.path_length = self.network.get_path(
-                    vehicle.location, vehicle.order_list[0].O_location)
-
-                if vehicle.path:
-                    if self.time - vehicle.activate_time > self.cfg.unit_driving_time * vehicle.path_length[0]:
-                        vehicle.location = vehicle.path.pop()
-                        vehicle.path_length.pop()
-                        vehicle.activate_time = self.time
-                        vehicle.p0_pickup_distance += pickup_distance
-                        vehicle.drive_distance += pickup_distance
-
-                else:
-                    # 接到乘客了
-                    pickup_time = self.cfg.unit_driving_time * vehicle.p0_pickup_distance
-                    self.pickup_time.append(pickup_time)
-                    vehicle.location = vehicle.order_list[0].O_location
-
-
-        end = time.time()
-        # print('派送用时{},takers{},vehicles{}'.format(end-start, len(takers), len(vehicles)))
-
-        self.remain_seekers = []
-        for seeker in seekers:
-            if seeker.response_target == 0 and (self.time - seeker.begin_time_stamp) < self.cfg.delay_time_threshold:
-                seeker.set_delay(self.time)
-                self.remain_seekers.append(seeker)
-
-        return step_reward
-
+        return action
 
     def calTakersWeights(self, taker, seeker,  optimazition_target, matching_condition):
         # expected shared distance
-        pick_up_distance = self.get_path(
-            seeker.O_location, taker.order_list[0].O_location)
+        Route, pick_up_distance = self.get_path((seeker.o_x,seeker.o_y),(taker.x,taker.y))
+
         fifo, distance = self.is_fifo(taker.order_list[0], seeker)
 
         if fifo:
             shared_distance = self.get_path(
-                seeker.O_location, taker.order_list[0].D_location)
+                (seeker.o_x,seeker.o_y), (taker.order_list[0].d_x, taker.order_list[0].d_y) )[1]
+
             p0_invehicle = pick_up_distance + distance[0]
             p1_invehicle = sum(distance)
             p0_detour = p0_invehicle - taker.order_list[0].shortest_distance
@@ -690,11 +270,10 @@ class Simulation():
             # print('taker reward',reward)
             return reward
 
-
     def calVehiclesWeights(self, vehicle, seeker,  optimazition_target, matching_condition):
 
         pick_up_distance = self.get_path(
-            seeker.O_location, vehicle.location)
+            (seeker.o_x,seeker.o_y), (vehicle.x , vehicle.y))[1]
         if matching_condition and (pick_up_distance > self.cfg.pickup_distance_threshold or seeker.esdt < 0):
             return self.cfg.dead_value
         else:
@@ -702,8 +281,8 @@ class Simulation():
             # print('vacant vehicle reward',reward)
             return reward
 
-
     # 计算乘客选择等待的权重
+
     def calSeekerWaitingWeights(self, seeker,  optimazition_target):
         if optimazition_target == 'platform_income':
             # 不可行
@@ -717,15 +296,17 @@ class Simulation():
             return reward
 
     def is_fifo(self, p0, p1):
-        fifo = [self.get_path(p1.O_location, p0.D_location),
-                self.get_path(p0.D_location, p1.D_location)]
-        lifo = [self.get_path(p1.O_location, p1.D_location),
-                self.get_path(p1.D_location, p0.D_location)]
+
+        fifo = [self.get_path((p1.o_x,p1.o_y),(p0.d_x,p0.d_y))[1],
+                self.get_path((p0.d_x,p0.d_y),(p1.d_x,p1.d_y))[1] ]
+
+        lifo = [self.get_path((p1.o_x,p1.o_y),(p1.d_x,p1.d_y))[1],
+                self.get_path((p1.d_x,p1.d_y),(p0.d_x,p0.d_y))[1] ]
+
         if sum(fifo) < sum(lifo):
             return True, fifo
         else:
             return False, lifo
-
 
     def get_path(self, O, D):
         tmp = self.shortest_path[(self.shortest_path['O'] == O) & (
@@ -733,7 +314,7 @@ class Simulation():
         if tmp['distance'].unique():
             return tmp['distance'].unique()[0]
         else:
-            return self.network.get_path(O,D)[0]
+            return self.network.get_path(O, D)[0]
 
     def save_metric(self, path):
         import pickle

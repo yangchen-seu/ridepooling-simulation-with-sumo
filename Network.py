@@ -140,6 +140,13 @@ class Network:
         length,Shortest_path = self.dijkstra(self.edges, O, D)
         return length, Shortest_path[1:] , self.find_length(Shortest_path)
 
+    # 给一个经纬度，返回所在的网格
+    def get_zone(self,x,y):
+        for zone in self.zones:
+            if zone.left_x <= x and y >= zone.left_y:
+                if zone.right_x >= x and y <= zone.right_y:
+                    return zone.id
+
 
     def test(self):
         order_list = pd.read_csv(

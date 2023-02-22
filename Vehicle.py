@@ -22,7 +22,10 @@ class Vehicle:
         self.his_order_list = [] # 响应过的所有订单
         self.reward = 0
         self.target = 0
-
+        self.x = 0
+        self.y = 0
+        self.zone = 0
+        
         self.reposition_target = 0 # 没有订单可接，进入下一次匹配
         self.p0_pickup_distance = 0
         self.drive_distance = 0
