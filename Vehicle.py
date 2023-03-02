@@ -14,27 +14,28 @@ import time
 class Vehicle:
     
 
-    def __init__(self, driver_id, location, cfg):
+    def __init__(self, driver_id, ori_x,ori_y, cfg, order_list,dest_x, dest_y):
         self.cfg = cfg
         self.id = driver_id
-        self.passengers = 0 # 0 没有乘客，1 可接一个拼车乘客，2 不可接乘客
-        self.order_list = [] # 当前正在响应的订单
+        self.passengers = len(order_list) # 0 没有乘客，1 可接一个拼车乘客，2 不可接乘客
+        self.order_list = order_list # 当前正在响应的订单
         self.his_order_list = [] # 响应过的所有订单
         self.reward = 0
         self.target = 0
-        self.x = 0
-        self.y = 0
+        self.x = ori_x
+        self.y = ori_y
         self.zone = 0
         
         self.reposition_target = 0 # 没有订单可接，进入下一次匹配
         self.p0_pickup_distance = 0
         self.drive_distance = 0
         
-        self.location = location # 当前智能体的位置
+
         self.path = []
         self.path_length = []
-        self.origin_location = location # 拼车前的位置
-        self.destination = 0 # 当前智能体的目的地
+  
+        self.destination_x = dest_x # 当前智能体的目的地
+        self.destination_y = dest_y # 当前智能体的目的地
         self.state = 0 # 能否执行动作
         self.activate_time  = time.mktime(time.strptime(cfg.date + cfg.simulation_begin_time, "%Y-%m-%d %H:%M:%S"))
 

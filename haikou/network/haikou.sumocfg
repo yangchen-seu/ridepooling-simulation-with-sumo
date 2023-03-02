@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+ 
+<configuration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ 
+ <input>
+    <net-file value="networks/haikou5.net.xml" />
+    <route-files value="haikou.rou.xml" />
+    <gui-settings-file value="haikou.view.xml"/>
+  </input>
+ 
+  <time>
+    <begin value="0" />
+    <end value="6000" />
+  </time>
+
+  <processing>
+    <ignore-route-errors value="true" />
+    <tls.all-off value="true" />
+  </processing>
+ 
+</configuration>

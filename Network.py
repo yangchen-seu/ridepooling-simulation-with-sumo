@@ -141,8 +141,9 @@ class Network:
         return length, Shortest_path[1:] , self.find_length(Shortest_path)
 
     # 给一个经纬度，返回所在的网格
-    def get_zone(self,x,y):
-        for zone in self.zones:
+    def getZone(self,x,y):
+        for key in self.zones.keys():
+            zone = self.zones[key]
             if zone.left_x <= x and y >= zone.left_y:
                 if zone.right_x >= x and y <= zone.right_y:
                     return zone.id

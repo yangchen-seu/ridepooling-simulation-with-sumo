@@ -12,18 +12,14 @@ import os
 
 class Simulation():
 
-    def __init__(self, cfg) -> None:
+    def __init__(self, cfg, vehicle_dic) -> None:
         self.cfg = cfg
         self.date = cfg.date
-        self.order_list = pd.read_csv(self.cfg.order_file).sample(
-            frac=cfg.demand_ratio, random_state=1)
-        self.vehicle_num = int(len(self.order_list) / cfg.order_driver_ratio)
+        self.order_list = pd.read_csv(self.cfg.order_file)
+
         self.order_list['beginTime_stamp'] = self.order_list['dwv_order_make_haikou_1.departure_time'].apply(
             lambda x: time.mktime(time.strptime(x, '%Y-%m-%d %H:%M:%S')))
-        self.begin_time = time.mktime(time.strptime(
-            cfg.date + cfg.simulation_begin_time, "%Y-%m-%d %H:%M:%S"))
-        self.end_time = time.mktime(time.strptime(
-            cfg.date + cfg.simulation_end_time, "%Y-%m-%d %H:%M:%S"))
+
         self.network = net.Network()
 
         self.time_unit = 10  # 控制的时间窗,每10s匹配一次
@@ -32,38 +28,15 @@ class Simulation():
         self.pickup_distance_threshold = cfg.pickup_distance_threshold
         self.detour_distance_threshold = cfg.detour_distance_threshold
         self.vehicle_dic = {}
+        # 初始化车辆
+        for key in vehicle_dic.keys():
+            self.vehicle_dic[key] = Vehicle.Vehicle(driver_id = key, ori_x = vehicle_dic[key][1][0], ori_y = vehicle_dic[key][1][1],
+                                                    cfg = cfg, order_list = vehicle_dic[key][0],dest_x = vehicle_dic[key][4][0],
+                                                      dest_y = vehicle_dic[key][4][1]
+                                                    ,)
         self.time_reset()
 
-        for i in range(self.vehicle_num):
-            random.seed(i)
-            location = random.choice(self.locations)
-            vehicle = Vehicle.Vehicle(i, location, self.cfg)
-            self.vehicle_dic[i] = vehicle
-            # 重置司机的时间
-            vehicle.activate_time = self.time
 
-    def reset(self):
-        self.vehicle_dic = {}
-        self.order_list['beginTime_stamp'] = self.order_list['dwv_order_make_haikou_1.departure_time'].apply(
-            lambda x: time.mktime(time.strptime(x, '%Y-%m-%d %H:%M:%S')))
-        self.begin_time = time.mktime(time.strptime(
-            self.cfg.date + self.cfg.simulation_begin_time, "%Y-%m-%d %H:%M:%S"))
-        self.end_time = time.mktime(time.strptime(
-            self.cfg.date + self.cfg.simulation_end_time, "%Y-%m-%d %H:%M:%S"))
-        self.order_list = self.order_list[self.order_list['beginTime_stamp']
-                                          >= self.begin_time]
-        self.order_list = self.order_list[self.order_list['beginTime_stamp']
-                                          <= self.end_time]
-
-        self.time_reset()
-
-        for i in range(self.vehicle_num):
-            random.seed(i)
-            location = random.choice(self.locations)
-            vehicle = Vehicle.Vehicle(i, location, self.cfg)
-            self.vehicle_list.append(vehicle)
-            # 重置司机的时间
-            vehicle.activate_time = self.time
 
     def time_reset(self):
         # 转换成时间数组
@@ -75,13 +48,19 @@ class Simulation():
         # print('time reset:', self.time)
 
     def step(self, observation):
+        
         time_old = self.time
         self.time += self.time_unit
         self.time_slot += 1
         vacant_vehicles = observation[0]
+        
         partially_occupied_vehicles = observation[1]
         fully_occupied_vehicles = observation[2]
         passengers = observation[3]
+        print('fully_occupied_vehicles',fully_occupied_vehicles)
+        print('vacant_vehicles',vacant_vehicles)
+        print('partially_occupied_vehicles',partially_occupied_vehicles)
+        print('passengers',passengers)
         responsed_passengers = observation[4]
 
         # 实例化乘客对象
@@ -97,51 +76,48 @@ class Simulation():
 
         # 更新司机位置
         for key in vacant_vehicles.keys():
-            self.vehicle_dic[key].x = vacant_vehicles[key][0]
-            self.vehicle_dic[key].y = vacant_vehicles[key][1]
+            self.vehicle_dic[key].x = vacant_vehicles[key][1][0]
+            self.vehicle_dic[key].y = vacant_vehicles[key][1][1]
             self.vehicle_dic[key].passengers = 0
-            self.vehicle_dic[key].zone = self.network.getZone(self.vehicle_dic[key].x, self.vehicle_dic[key].y)
+            self.vehicle_dic[key].zone = self.network.getZone(
+                self.vehicle_dic[key].x, self.vehicle_dic[key].y)
 
         for key in partially_occupied_vehicles.keys():
             self.vehicle_dic[key].x = partially_occupied_vehicles[key][0]
             self.vehicle_dic[key].y = partially_occupied_vehicles[key][1]
             self.vehicle_dic[key].passengers = 1
-            self.vehicle_dic[key].zone = self.network.getZone(self.vehicle_dic[key].x, self.vehicle_dic[key].y)
+            self.vehicle_dic[key].zone = self.network.getZone(
+                self.vehicle_dic[key].x, self.vehicle_dic[key].y)
 
         for key in fully_occupied_vehicles.keys():
             self.vehicle_dic[key].x = fully_occupied_vehicles[key][0]
             self.vehicle_dic[key].y = fully_occupied_vehicles[key][1]
             self.vehicle_dic[key].passengers = 2
-            self.vehicle_dic[key].zone = self.network.getZone(self.vehicle_dic[key].x, self.vehicle_dic[key].y)
+            self.vehicle_dic[key].zone = self.network.getZone(
+                self.vehicle_dic[key].x, self.vehicle_dic[key].y)
 
         start = time.time()
-        done = self.process(self.time, seekers)
+        action = self.process(self.time, seekers)
         end = time.time()
         # print('process 用时', end - start)
-        return  done
+        return action
 
     #
     def process(self, time_, seekers):
         takers = []
         vehicles = []
-
-        if self.time >= time.mktime(time.strptime(self.cfg.date + self.cfg.simulation_end_time, "%Y-%m-%d %H:%M:%S")):
-            print('当前episode仿真时间结束')
-            return  0, True
-
-        else:
-            for vehicle in self.vehicle_dic:
-                if vehicle.passengers == 0:
-                    vehicles.append(vehicle)
-                elif vehicle.passengers == 1:
-                    takers.append(vehicle)
+        for key in self.vehicle_dic:
+            if self.vehicle_dic[key].passengers == 0:
+                vehicles.append(self.vehicle_dic[key])
+            elif self.vehicle_dic[key].passengers == 1:
+                takers.append(self.vehicle_dic[key])
 
             # print('len(vehicles)',len(vehicles),'len(takers)', len(takers))
-            start = time.time()
-            action = self.batch_matching(takers, vehicles, seekers)
-            end = time.time()
+        start = time.time()
+        action = self.batch_matching(takers, vehicles, seekers)
+        end = time.time()
             # print('匹配用时{},time{},vehicles{},takers{},seekers{}'.format(end - start, self.time_slot, len(vehicles), len(takers), len(seekers)))
-            return  action, False
+        return action
 
     # 匹配算法
     def batch_matching(self, takers, vehicles, seekers):
@@ -152,7 +128,8 @@ class Simulation():
         supply = len(takers) + len(vehicles)
         row_nums = demand + supply  # 加入乘客选择wait
         column_nums = demand + supply  # 加入司机选择wait
-        # print('row_nums,column_nums ',row_nums,column_nums )
+        print('row_nums,column_nums ',row_nums,column_nums )
+        print(seekers)
         dim = max(row_nums, column_nums)
         matrix = np.ones((dim, dim)) * self.cfg.dead_value
 
@@ -196,7 +173,7 @@ class Simulation():
         end = time.time()
         # print('构造矩阵用时', end-start)
         # print(matrix)
- 
+
         # 匹配
         import time
         start = time.time()
@@ -232,20 +209,20 @@ class Simulation():
             if seekers[i].service_target == 0:
                 unmatched_passengers.append(seekers[i].id)
 
-        action = [matched_dic, unmatched_lis, unmatched_passengers ]   
+        action = [matched_dic, unmatched_lis, unmatched_passengers ]
         # print('匹配时间{},匹配成功{},匹配失败{},takers{},vehicles{},demand{},time{}'.
         #       format(end-start, successed, failed, len(takers), len(vehicles), len(seekers), self.time_slot))
         return action
 
     def calTakersWeights(self, taker, seeker,  optimazition_target, matching_condition):
         # expected shared distance
-        Route, pick_up_distance = self.get_path((seeker.o_x,seeker.o_y),(taker.x,taker.y))
+        Route, pick_up_distance = self.get_path((seeker.o_x, seeker.o_y),(taker.x,taker.y))
 
         fifo, distance = self.is_fifo(taker.order_list[0], seeker)
 
         if fifo:
             shared_distance = self.get_path(
-                (seeker.o_x,seeker.o_y), (taker.order_list[0].d_x, taker.order_list[0].d_y) )[1]
+                (seeker.o_x, seeker.o_y), (taker.order_list[0].d_x, taker.order_list[0].d_y) )[1]
 
             p0_invehicle = pick_up_distance + distance[0]
             p1_invehicle = sum(distance)
@@ -273,7 +250,7 @@ class Simulation():
     def calVehiclesWeights(self, vehicle, seeker,  optimazition_target, matching_condition):
 
         pick_up_distance = self.get_path(
-            (seeker.o_x,seeker.o_y), (vehicle.x , vehicle.y))[1]
+            (seeker.o_x, seeker.o_y), (vehicle.x , vehicle.y))[1]
         if matching_condition and (pick_up_distance > self.cfg.pickup_distance_threshold or seeker.esdt < 0):
             return self.cfg.dead_value
         else:
@@ -297,11 +274,11 @@ class Simulation():
 
     def is_fifo(self, p0, p1):
 
-        fifo = [self.get_path((p1.o_x,p1.o_y),(p0.d_x,p0.d_y))[1],
-                self.get_path((p0.d_x,p0.d_y),(p1.d_x,p1.d_y))[1] ]
+        fifo = [self.get_path((p1.o_x, p1.o_y),(p0.d_x,p0.d_y))[1],
+                self.get_path((p0.d_x, p0.d_y),(p1.d_x,p1.d_y))[1] ]
 
-        lifo = [self.get_path((p1.o_x,p1.o_y),(p1.d_x,p1.d_y))[1],
-                self.get_path((p1.d_x,p1.d_y),(p0.d_x,p0.d_y))[1] ]
+        lifo = [self.get_path((p1.o_x, p1.o_y),(p1.d_x,p1.d_y))[1],
+                self.get_path((p1.d_x, p1.d_y),(p0.d_x,p0.d_y))[1] ]
 
         if sum(fifo) < sum(lifo):
             return True, fifo
